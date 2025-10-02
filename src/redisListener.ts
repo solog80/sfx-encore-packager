@@ -28,6 +28,7 @@ export class RedisListener {
 
   private client: Awaited<ReturnType<typeof createClient>> | undefined;
   private cluster: Awaited<ReturnType<typeof createCluster>> | undefined;
+  private uploadClient: Awaited<ReturnType<typeof createClient>> | undefined; // NEW: Upload notification client
 
   constructor(
     private redisConfig: RedisConfig,
@@ -73,6 +74,7 @@ export class RedisListener {
   async stop() {
     this.running = false;
     await this.disconnect();
+    await this.uploadClient?.quit(); // NEW: Clean up upload client
   }
 
   async handleMessage(message: string) {
@@ -124,6 +126,9 @@ export class RedisListener {
         })
         .connect();
     }
+
+    // NEW: Initialize upload client if upload is enabled
+    await this.initUploadClient();
   }
 
   async disconnect() {
@@ -133,6 +138,54 @@ export class RedisListener {
     }
     await this.client?.quit();
     this.client = undefined;
+    await this.uploadClient?.quit(); // NEW: Clean up upload client
+    this.uploadClient = undefined;
+  }
+
+  // NEW: Initialize upload notification client
+  private async initUploadClient() {
+    const uploadEnabled = process.env.UPLOAD_ENABLED === 'true';
+    if (uploadEnabled && !this.uploadClient) {
+      try {
+        this.uploadClient = await createClient({ 
+          url: this.redisConfig.url 
+        })
+        .on('error', (err) => {
+          logger.warn(`Upload Redis Client Error: ${(err as Error).message}`);
+        })
+        .connect();
+        logger.info('✅ Upload notification client connected');
+      } catch (error) {
+        logger.warn(`Failed to connect upload client: ${error}`);
+      }
+    }
+  }
+
+  // NEW: Publish upload notification
+  private async publishUploadNotification(jobId: string, outputPath?: string) {
+    try {
+      const uploadEnabled = process.env.UPLOAD_ENABLED === 'true';
+      
+      if (!uploadEnabled || !outputPath || !this.uploadClient) {
+        return;
+      }
+
+      const packagesBaseDir = process.env.PACKAGES_BASE_DIR || '/data/packages';
+      const relativePath = outputPath.replace(packagesBaseDir, '').replace(/^\//, '');
+      const uploadChannel = process.env.UPLOAD_REDIS_CHANNEL || 'packaging-complete';
+      
+      if (relativePath) {
+        await this.uploadClient.publish(uploadChannel, JSON.stringify({
+          jobId: jobId,
+          packagePath: relativePath,
+          timestamp: new Date().toISOString()
+        }));
+        
+        logger.info(`📤 Published upload notification for: ${relativePath}`);
+      }
+    } catch (error) {
+      logger.warn(`Failed to publish upload notification: ${error}`);
+    }
   }
 
   redisStatus(): 'UP' | 'DOWN' {
@@ -161,6 +214,9 @@ export class RedisListener {
   onPackageDone(jobUrl: string, jobId: string, outputPath?: string) {
     try {
       this.packageListener?.onPackageDone?.(jobUrl, jobId, outputPath);
+      
+      // NEW: Trigger upload notification
+      this.publishUploadNotification(jobId, outputPath);
     } catch (err) {
       logger.warn(
         `Error when calling onPackageDone: ${(err as Error).message}`
