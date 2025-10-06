@@ -260,7 +260,8 @@ export class RedisListener {
         
         return originalPath;
       } else {
-        logger.warn(`❌ No original S3 path found for externalId ${externalId} using any key format`);
+        console.log(`=== 🔴 MAIN PACKAGING WARNING: No original S3 path found for job ${jobId} ===`);
+        console.log(`=== 🔴 This warning comes BEFORE publishUploadNotification ===`);
         
         try {
           const allKeys = await this.metadataClient.keys('*');
@@ -281,81 +282,81 @@ export class RedisListener {
   }
 
   private async publishUploadNotification(jobId: string, outputPath?: string) {
-    try {
-      console.log(`=== 📤 PUBLISH UPLOAD NOTIFICATION START ===`);
-      console.log(`Job ID: ${jobId}`);
-      console.log(`Output Path: ${outputPath || 'UNDEFINED'}`);
-      
-      const uploadEnabled = process.env.UPLOAD_ENABLED === 'true';
-      console.log(`Upload Enabled: ${uploadEnabled}`);
-      console.log(`Upload Client Available: ${!!this.uploadClient}`);
-      
-      if (!uploadEnabled) {
-        console.log(`❌ Upload not enabled, skipping`);
-        return;
-      }
-      
-      if (!outputPath) {
-        console.log(`❌ Output path is undefined, cannot proceed`);
-        return;
-      }
-      
-      if (!this.uploadClient) {
-        console.log(`❌ Upload client not available, skipping`);
-        return;
-      }
-
-      console.log(`🔍 Looking up original S3 path for job: ${jobId}`);
-      const originalS3Path = await this.getOriginalS3Path(jobId);
-      console.log(`📁 Retrieved S3 path: ${originalS3Path || 'NOT FOUND'}`);
-      
-      const packagesBaseDir = process.env.PACKAGES_BASE_DIR || '/data/packages';
-      console.log(`📦 Packages base directory: ${packagesBaseDir}`);
-      
-      console.log(`🔧 Calculating relative path...`);
-      console.log(`   Output path: ${outputPath}`);
-      console.log(`   Base dir: ${packagesBaseDir}`);
-      
-      const relativePath = outputPath.replace(packagesBaseDir, '').replace(/^\//, '');
-      console.log(`📁 Relative path result: "${relativePath}"`);
-      
-      const uploadChannel = process.env.UPLOAD_REDIS_CHANNEL || 'packaging-complete';
-      console.log(`📢 Upload channel: ${uploadChannel}`);
-      
-      if (relativePath) {
-        const uploadMessage = {
-          jobId: jobId,
-          packagePath: relativePath,
-          timestamp: new Date().toISOString(),
-          originalS3Path: originalS3Path
-        };
-
-        console.log(`📦 Prepared upload message:`, JSON.stringify(uploadMessage, null, 2));
-        
-        try {
-          console.log(`🚀 Publishing to Redis channel: ${uploadChannel}`);
-          await this.uploadClient.publish(uploadChannel, JSON.stringify(uploadMessage));
-          console.log(`✅ Successfully published upload notification`);
-          
-          if (originalS3Path) {
-            console.log(`📤 Published for: ${relativePath} (original: ${originalS3Path})`);
-          } else {
-            console.log(`📤 Published for: ${relativePath} (no original path found)`);
-          }
-        } catch (publishError) {
-          console.error(`❌ Failed to publish message: ${publishError}`);
-        }
-      } else {
-        console.warn(`❌ Cannot publish - relativePath is empty`);
-        console.warn(`   Output path: ${outputPath}`);
-        console.warn(`   Base dir: ${packagesBaseDir}`);
-      }
-      
-      console.log(`=== 📤 PUBLISH UPLOAD NOTIFICATION END ===\n`);
-    } catch (error) {
-      console.error(`🚨 Failed to publish upload notification: ${error}`);
+  try {
+    console.log(`\n\n=== 🚀 PUBLISH UPLOAD NOTIFICATION START ===`);
+    console.log(`📋 Job ID: ${jobId}`);
+    console.log(`📋 Output Path: ${outputPath || 'UNDEFINED'}`);
+    
+    // IMMEDIATELY lookup the S3 path to see if it works
+    console.log(`🔍 IMMEDIATE S3 PATH LOOKUP FOR JOB: ${jobId}`);
+    const immediateS3Path = await this.getOriginalS3Path(jobId);
+    console.log(`🔍 IMMEDIATE RESULT: ${immediateS3Path || 'NOT FOUND'}`);
+    
+    const uploadEnabled = process.env.UPLOAD_ENABLED === 'true';
+    console.log(`⚙️ Upload Enabled: ${uploadEnabled}`);
+    console.log(`⚙️ Upload Client Available: ${!!this.uploadClient}`);
+    
+    if (!uploadEnabled) {
+      console.log(`❌ Upload not enabled, skipping`);
+      return;
     }
+    
+    if (!outputPath) {
+      console.log(`❌ Output path is undefined, cannot proceed`);
+      return;
+    }
+    
+    if (!this.uploadClient) {
+      console.log(`❌ Upload client not available, skipping`);
+      return;
+    }
+
+    // Now do the normal lookup
+    console.log(`🔍 NORMAL S3 PATH LOOKUP FOR JOB: ${jobId}`);
+    const originalS3Path = await this.getOriginalS3Path(jobId);
+    console.log(`🔍 NORMAL RESULT: ${originalS3Path || 'NOT FOUND'}`);
+    
+    const packagesBaseDir = process.env.PACKAGES_BASE_DIR || '/data/packages';
+    console.log(`📦 Packages base directory: ${packagesBaseDir}`);
+    
+    const relativePath = outputPath.replace(packagesBaseDir, '').replace(/^\//, '');
+    console.log(`📁 Relative path: "${relativePath}"`);
+    
+    const uploadChannel = process.env.UPLOAD_REDIS_CHANNEL || 'packaging-complete';
+    console.log(`📢 Upload channel: ${uploadChannel}`);
+    
+    if (relativePath) {
+      const uploadMessage = {
+        jobId: jobId,
+        packagePath: relativePath,
+        timestamp: new Date().toISOString(),
+        originalS3Path: originalS3Path
+      };
+
+      console.log(`📦 FINAL UPLOAD MESSAGE:`, JSON.stringify(uploadMessage, null, 2));
+      
+      try {
+        console.log(`🚀 Publishing to Redis channel: ${uploadChannel}`);
+        await this.uploadClient.publish(uploadChannel, JSON.stringify(uploadMessage));
+        console.log(`✅ SUCCESS: Published upload notification`);
+        
+        if (originalS3Path) {
+          console.log(`🎯 UPLOADING TO: ${originalS3Path}`);
+        } else {
+          console.log(`⚠️ UPLOADING TO FALLBACK PATH`);
+        }
+      } catch (publishError) {
+        console.error(`❌ FAILED to publish message: ${publishError}`);
+      }
+    } else {
+      console.warn(`❌ Cannot publish - relativePath is empty`);
+    }
+    
+    console.log(`=== 🚀 PUBLISH UPLOAD NOTIFICATION END ===\n\n`);
+  } catch (error) {
+    console.error(`🚨 CRITICAL ERROR in publishUploadNotification: ${error}`);
   }
+}
 
   redisStatus(): 'UP' | 'DOWN' {
     if (this.redisConfig.clusterMode) {
