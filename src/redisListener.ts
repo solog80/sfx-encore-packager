@@ -28,7 +28,8 @@ export class RedisListener {
 
   private client: Awaited<ReturnType<typeof createClient>> | undefined;
   private cluster: Awaited<ReturnType<typeof createCluster>> | undefined;
-  private uploadClient: Awaited<ReturnType<typeof createClient>> | undefined; // NEW: Upload notification client
+  private uploadClient: Awaited<ReturnType<typeof createClient>> | undefined;
+  private metadataClient: Awaited<ReturnType<typeof createClient>> | undefined; // NEW: Client for retrieving original S3 path
 
   constructor(
     private redisConfig: RedisConfig,
@@ -74,7 +75,8 @@ export class RedisListener {
   async stop() {
     this.running = false;
     await this.disconnect();
-    await this.uploadClient?.quit(); // NEW: Clean up upload client
+    await this.uploadClient?.quit();
+    await this.metadataClient?.quit(); // NEW: Clean up metadata client
   }
 
   async handleMessage(message: string) {
@@ -127,8 +129,9 @@ export class RedisListener {
         .connect();
     }
 
-    // NEW: Initialize upload client if upload is enabled
+    // Initialize both upload and metadata clients
     await this.initUploadClient();
+    await this.initMetadataClient(); // NEW: Initialize metadata client
   }
 
   async disconnect() {
@@ -138,11 +141,13 @@ export class RedisListener {
     }
     await this.client?.quit();
     this.client = undefined;
-    await this.uploadClient?.quit(); // NEW: Clean up upload client
+    await this.uploadClient?.quit();
     this.uploadClient = undefined;
+    await this.metadataClient?.quit(); // NEW: Clean up metadata client
+    this.metadataClient = undefined;
   }
 
-  // NEW: Initialize upload notification client
+  // Initialize upload notification client
   private async initUploadClient() {
     const uploadEnabled = process.env.UPLOAD_ENABLED === 'true';
     if (uploadEnabled && !this.uploadClient) {
@@ -161,7 +166,50 @@ export class RedisListener {
     }
   }
 
-  // NEW: Publish upload notification
+  // NEW: Initialize metadata client for retrieving original S3 path
+  private async initMetadataClient() {
+    const uploadEnabled = process.env.UPLOAD_ENABLED === 'true';
+    if (uploadEnabled && !this.metadataClient) {
+      try {
+        this.metadataClient = await createClient({ 
+          url: this.redisConfig.url 
+        })
+        .on('error', (err) => {
+          logger.warn(`Metadata Redis Client Error: ${(err as Error).message}`);
+        })
+        .connect();
+        logger.info('✅ Metadata client connected');
+      } catch (error) {
+        logger.warn(`Failed to connect metadata client: ${error}`);
+      }
+    }
+  }
+
+  // NEW: Retrieve original S3 path from Redis
+  private async getOriginalS3Path(jobId: string): Promise<string | null> {
+    try {
+      if (!this.metadataClient) {
+        logger.warn('Metadata client not available');
+        return null;
+      }
+
+      const redisKey = `original-s3-path:${jobId}`;
+      const originalPath = await this.metadataClient.get(redisKey);
+      
+      if (originalPath) {
+        logger.info(`📁 Retrieved original S3 path for job ${jobId}: ${originalPath}`);
+        return originalPath;
+      } else {
+        logger.warn(`❌ No original S3 path found for job ${jobId}`);
+        return null;
+      }
+    } catch (error) {
+      logger.warn(`Failed to retrieve original S3 path for job ${jobId}: ${error}`);
+      return null;
+    }
+  }
+
+  // Publish upload notification with original S3 path
   private async publishUploadNotification(jobId: string, outputPath?: string) {
     try {
       const uploadEnabled = process.env.UPLOAD_ENABLED === 'true';
@@ -170,18 +218,28 @@ export class RedisListener {
         return;
       }
 
+      // NEW: Retrieve original S3 path
+      const originalS3Path = await this.getOriginalS3Path(jobId);
+      
       const packagesBaseDir = process.env.PACKAGES_BASE_DIR || '/data/packages';
       const relativePath = outputPath.replace(packagesBaseDir, '').replace(/^\//, '');
       const uploadChannel = process.env.UPLOAD_REDIS_CHANNEL || 'packaging-complete';
       
       if (relativePath) {
-        await this.uploadClient.publish(uploadChannel, JSON.stringify({
+        const uploadMessage = {
           jobId: jobId,
           packagePath: relativePath,
-          timestamp: new Date().toISOString()
-        }));
+          timestamp: new Date().toISOString(),
+          originalS3Path: originalS3Path // NEW: Include original S3 path
+        };
+
+        await this.uploadClient.publish(uploadChannel, JSON.stringify(uploadMessage));
         
-        logger.info(`📤 Published upload notification for: ${relativePath}`);
+        if (originalS3Path) {
+          logger.info(`📤 Published upload notification for: ${relativePath} (original: ${originalS3Path})`);
+        } else {
+          logger.info(`📤 Published upload notification for: ${relativePath} (no original path found)`);
+        }
       }
     } catch (error) {
       logger.warn(`Failed to publish upload notification: ${error}`);
@@ -190,9 +248,6 @@ export class RedisListener {
 
   redisStatus(): 'UP' | 'DOWN' {
     if (this.redisConfig.clusterMode) {
-      // node-redis doesn't support isReady for cluster mode
-      // https://github.com/redis/node-redis/issues/1855
-      // so we have to hard-code this for now
       return 'UP';
     }
     if (!this.client) {
@@ -215,7 +270,7 @@ export class RedisListener {
     try {
       this.packageListener?.onPackageDone?.(jobUrl, jobId, outputPath);
       
-      // NEW: Trigger upload notification
+      // Trigger upload notification with original S3 path
       this.publishUploadNotification(jobId, outputPath);
     } catch (err) {
       logger.warn(
