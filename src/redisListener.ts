@@ -186,28 +186,73 @@ export class RedisListener {
   }
 
   // NEW: Retrieve original S3 path from Redis
-  private async getOriginalS3Path(jobId: string): Promise<string | null> {
-    try {
-      if (!this.metadataClient) {
-        logger.warn('Metadata client not available');
-        return null;
-      }
+  // private async getOriginalS3Path(jobId: string): Promise<string | null> {
+  //   try {
+  //     if (!this.metadataClient) {
+  //       logger.warn('Metadata client not available');
+  //       return null;
+  //     }
 
-      const redisKey = `original-s3-path:${jobId}`;
-      const originalPath = await this.metadataClient.get(redisKey);
+  //     const redisKey = `original-s3-path:${jobId}`;
+  //     const originalPath = await this.metadataClient.get(redisKey);
       
-      if (originalPath) {
-        logger.info(`📁 Retrieved original S3 path for job ${jobId}: ${originalPath}`);
-        return originalPath;
-      } else {
-        logger.warn(`❌ No original S3 path found for job ${jobId}`);
-        return null;
-      }
-    } catch (error) {
-      logger.warn(`Failed to retrieve original S3 path for job ${jobId}: ${error}`);
+  //     if (originalPath) {
+  //       logger.info(`📁 Retrieved original S3 path for job ${jobId}: ${originalPath}`);
+  //       return originalPath;
+  //     } else {
+  //       logger.warn(`❌ No original S3 path found for job ${jobId}`);
+  //       return null;
+  //     }
+  //   } catch (error) {
+  //     logger.warn(`Failed to retrieve original S3 path for job ${jobId}: ${error}`);
+  //     return null;
+  //   }
+  // }
+
+  // NEW: Retrieve original S3 path from Redis using external ID
+private async getOriginalS3Path(jobId: string): Promise<string | null> {
+  try {
+    if (!this.metadataClient) {
+      logger.warn('Metadata client not available');
       return null;
     }
+
+    // First, get the job details from Encore to extract the externalId
+    const jobUrl = `http://encore:8080/encoreJobs/${jobId}`;
+    logger.info(`🔍 Fetching job details from: ${jobUrl}`);
+    
+    const response = await fetch(jobUrl);
+    if (!response.ok) {
+      logger.warn(`Failed to fetch job details for ${jobId}: ${response.statusText}`);
+      return null;
+    }
+
+    const jobDetails = await response.json();
+    const externalId = jobDetails.externalId;
+    
+    if (!externalId) {
+      logger.warn(`❌ No externalId found in job details for job ${jobId}`);
+      return null;
+    }
+
+    logger.info(`📁 Looking up S3 path for externalId: ${externalId}`);
+    
+    // Use the externalId to look up the original S3 path
+    const redisKey = `originalS3Path:${externalId}`;
+    const originalPath = await this.metadataClient.get(redisKey);
+    
+    if (originalPath) {
+      logger.info(`✅ Retrieved original S3 path for job ${jobId}: ${originalPath}`);
+      return originalPath;
+    } else {
+      logger.warn(`❌ No original S3 path found for externalId ${externalId} (job ${jobId})`);
+      return null;
+    }
+  } catch (error) {
+    logger.warn(`Failed to retrieve original S3 path for job ${jobId}: ${error}`);
+    return null;
   }
+}
 
   // Publish upload notification with original S3 path
   private async publishUploadNotification(jobId: string, outputPath?: string) {
