@@ -217,17 +217,35 @@ private async getOriginalS3Path(jobId: string): Promise<string | null> {
       return null;
     }
 
+    // Test Redis connectivity first
+    try {
+      await this.metadataClient.ping();
+      logger.info('✅ Redis ping successful');
+    } catch (redisError) {
+      logger.error(`❌ Redis ping failed: ${redisError}`);
+      return null;
+    }
+
     // First, get the job details from Encore to extract the externalId
     const jobUrl = `http://encore:8080/encoreJobs/${jobId}`;
     logger.info(`🔍 Fetching job details from: ${jobUrl}`);
     
     const response = await fetch(jobUrl);
+    logger.info(`📡 Encore API response status: ${response.status} ${response.statusText}`);
+    
     if (!response.ok) {
       logger.warn(`Failed to fetch job details for ${jobId}: ${response.statusText}`);
       return null;
     }
 
     const jobDetails = await response.json();
+    logger.info(`📄 Full job details: ${JSON.stringify({
+      id: jobDetails.id,
+      externalId: jobDetails.externalId,
+      baseName: jobDetails.baseName,
+      status: jobDetails.status
+    }, null, 2)}`);
+    
     const externalId = jobDetails.externalId;
     
     if (!externalId) {
@@ -239,6 +257,19 @@ private async getOriginalS3Path(jobId: string): Promise<string | null> {
     
     // Use the externalId to look up the original S3 path
     const redisKey = `originalS3Path:${externalId}`;
+    logger.info(`🔑 Redis key being used: ${redisKey}`);
+    
+    // List all keys to see what's actually in Redis
+    try {
+      const allKeys = await this.metadataClient.keys('*');
+      logger.info(`🗝️ All keys in Redis: ${JSON.stringify(allKeys)}`);
+      
+      const s3Keys = await this.metadataClient.keys('originalS3Path:*');
+      logger.info(`🗝️ All S3 path keys in Redis: ${JSON.stringify(s3Keys)}`);
+    } catch (keysError) {
+      logger.warn(`Failed to list Redis keys: ${keysError}`);
+    }
+    
     const originalPath = await this.metadataClient.get(redisKey);
     
     if (originalPath) {
@@ -246,10 +277,26 @@ private async getOriginalS3Path(jobId: string): Promise<string | null> {
       return originalPath;
     } else {
       logger.warn(`❌ No original S3 path found for externalId ${externalId} (job ${jobId})`);
+      
+      // Try alternative key patterns as fallback
+      const alternativeKeys = [
+        `original-s3-path:${jobId}`,
+        `originalS3Path:${jobId}`,
+        `original-s3-path:${externalId}`
+      ];
+      
+      for (const altKey of alternativeKeys) {
+        const altPath = await this.metadataClient.get(altKey);
+        if (altPath) {
+          logger.info(`🔄 Found path using alternative key ${altKey}: ${altPath}`);
+          return altPath;
+        }
+      }
+      
       return null;
     }
   } catch (error) {
-    logger.warn(`Failed to retrieve original S3 path for job ${jobId}: ${error}`);
+    logger.error(`🚨 Failed to retrieve original S3 path for job ${jobId}: ${error}`);
     return null;
   }
 }
