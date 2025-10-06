@@ -29,7 +29,7 @@ export class RedisListener {
   private client: Awaited<ReturnType<typeof createClient>> | undefined;
   private cluster: Awaited<ReturnType<typeof createCluster>> | undefined;
   private uploadClient: Awaited<ReturnType<typeof createClient>> | undefined;
-  private metadataClient: Awaited<ReturnType<typeof createClient>> | undefined; // NEW: Client for retrieving original S3 path
+  private metadataClient: Awaited<ReturnType<typeof createClient>> | undefined;
 
   constructor(
     private redisConfig: RedisConfig,
@@ -76,7 +76,7 @@ export class RedisListener {
     this.running = false;
     await this.disconnect();
     await this.uploadClient?.quit();
-    await this.metadataClient?.quit(); // NEW: Clean up metadata client
+    await this.metadataClient?.quit();
   }
 
   async handleMessage(message: string) {
@@ -90,7 +90,15 @@ export class RedisListener {
           `Sending message for processing, currently processing ${this.noProcessing} messages`
         );
         this.onPackageStart(parsedMessage.url, parsedMessage.jobId);
+        
+        // Enhanced debugging for onMessage result
+        console.log(`=== 🎯 CALLING ONMESSAGE FUNCTION ===`);
         const onMessageResult = await this.onMessage(parsedMessage);
+        console.log(`✅ onMessage completed`);
+        console.log(`onMessage result: ${onMessageResult || 'UNDEFINED'}`);
+        console.log(`onMessage result type: ${typeof onMessageResult}`);
+        console.log(`=== 🎯 ONMESSAGE COMPLETED ===\n`);
+        
         this.onPackageDone(
           parsedMessage.url,
           parsedMessage.jobId,
@@ -129,9 +137,8 @@ export class RedisListener {
         .connect();
     }
 
-    // Initialize both upload and metadata clients
     await this.initUploadClient();
-    await this.initMetadataClient(); // NEW: Initialize metadata client
+    await this.initMetadataClient();
   }
 
   async disconnect() {
@@ -143,11 +150,10 @@ export class RedisListener {
     this.client = undefined;
     await this.uploadClient?.quit();
     this.uploadClient = undefined;
-    await this.metadataClient?.quit(); // NEW: Clean up metadata client
+    await this.metadataClient?.quit();
     this.metadataClient = undefined;
   }
 
-  // Initialize upload notification client
   private async initUploadClient() {
     const uploadEnabled = process.env.UPLOAD_ENABLED === 'true';
     if (uploadEnabled && !this.uploadClient) {
@@ -166,7 +172,6 @@ export class RedisListener {
     }
   }
 
-  // NEW: Initialize metadata client for retrieving original S3 path
   private async initMetadataClient() {
     const uploadEnabled = process.env.UPLOAD_ENABLED === 'true';
     if (uploadEnabled && !this.metadataClient) {
@@ -185,161 +190,170 @@ export class RedisListener {
     }
   }
 
-  // NEW: Retrieve original S3 path from Redis
-  // private async getOriginalS3Path(jobId: string): Promise<string | null> {
-  //   try {
-  //     if (!this.metadataClient) {
-  //       logger.warn('Metadata client not available');
-  //       return null;
-  //     }
-
-  //     const redisKey = `original-s3-path:${jobId}`;
-  //     const originalPath = await this.metadataClient.get(redisKey);
-      
-  //     if (originalPath) {
-  //       logger.info(`📁 Retrieved original S3 path for job ${jobId}: ${originalPath}`);
-  //       return originalPath;
-  //     } else {
-  //       logger.warn(`❌ No original S3 path found for job ${jobId}`);
-  //       return null;
-  //     }
-  //   } catch (error) {
-  //     logger.warn(`Failed to retrieve original S3 path for job ${jobId}: ${error}`);
-  //     return null;
-  //   }
-  // }
-
-  // NEW: Retrieve original S3 path from Redis using external ID
-// NEW: Retrieve original S3 path from Redis using external ID - supports both formats
-private async getOriginalS3Path(jobId: string): Promise<string | null> {
-  try {
-    if (!this.metadataClient) {
-      logger.warn('Metadata client not available');
-      return null;
-    }
-
-    // Test Redis connectivity first
+  private async getOriginalS3Path(jobId: string): Promise<string | null> {
     try {
-      await this.metadataClient.ping();
-      logger.info('✅ Redis ping successful');
-    } catch (redisError) {
-      logger.error(`❌ Redis ping failed: ${redisError}`);
-      return null;
-    }
-
-    // First, get the job details from Encore to extract the externalId
-    const jobUrl = `http://encore:8080/encoreJobs/${jobId}`;
-    logger.info(`🔍 Fetching job details from: ${jobUrl}`);
-    
-    const response = await fetch(jobUrl);
-    logger.info(`📡 Encore API response status: ${response.status} ${response.statusText}`);
-    
-    if (!response.ok) {
-      logger.warn(`Failed to fetch job details for ${jobId}: ${response.statusText}`);
-      return null;
-    }
-
-    const jobDetails = await response.json();
-    const externalId = jobDetails.externalId;
-    
-    logger.info(`📄 Job details - ID: ${jobId}, ExternalID: ${externalId}`);
-    
-    if (!externalId) {
-      logger.warn(`❌ No externalId found in job details for job ${jobId}`);
-      return null;
-    }
-
-    logger.info(`📁 Looking up S3 path for externalId: ${externalId}`);
-    
-    // Try BOTH key formats
-    const keyFormats = [
-      `originalS3Path:${externalId}`,  // New format (camelCase)
-      `original-s3-path:${externalId}`  // Old format (with hyphens)
-    ];
-    
-    logger.info(`🔑 Trying key formats: ${JSON.stringify(keyFormats)}`);
-    
-    let originalPath: string | null = null;
-    let foundKey: string | null = null;
-    
-    for (const key of keyFormats) {
-      const value = await this.metadataClient.get(key);
-      if (value) {
-        originalPath = value;
-        foundKey = key;
-        logger.info(`✅ Found S3 path using key: ${key}`);
-        break;
+      if (!this.metadataClient) {
+        logger.warn('Metadata client not available');
+        return null;
       }
-    }
-    
-    if (originalPath && foundKey) {
-      logger.info(`✅ Retrieved original S3 path for job ${jobId}: ${originalPath}`);
-      
-      // If we found it using old format, migrate to new format
-      if (foundKey.includes('original-s3-path')) {
-        const newKey = `originalS3Path:${externalId}`;
-        await this.metadataClient.set(newKey, originalPath, { EX: 86400 });
-        await this.metadataClient.del(foundKey);
-        logger.info(`🔄 Migrated from ${foundKey} to ${newKey}`);
-      }
-      
-      return originalPath;
-    } else {
-      logger.warn(`❌ No original S3 path found for externalId ${externalId} using any key format`);
-      
-      // Debug: List all available keys to help troubleshooting
+
       try {
-        const allKeys = await this.metadataClient.keys('*');
-        const s3Keys = allKeys.filter(key => 
-          key.includes('originalS3Path') || key.includes('original-s3-path')
-        );
-        logger.info(`🔍 Available S3 path keys in Redis: ${JSON.stringify(s3Keys)}`);
-      } catch (keysError) {
-        logger.warn(`Failed to list Redis keys: ${keysError}`);
+        await this.metadataClient.ping();
+        logger.info('✅ Redis ping successful');
+      } catch (redisError) {
+        logger.error(`❌ Redis ping failed: ${redisError}`);
+        return null;
+      }
+
+      const jobUrl = `http://encore:8080/encoreJobs/${jobId}`;
+      logger.info(`🔍 Fetching job details from: ${jobUrl}`);
+      
+      const response = await fetch(jobUrl);
+      logger.info(`📡 Encore API response status: ${response.status} ${response.statusText}`);
+      
+      if (!response.ok) {
+        logger.warn(`Failed to fetch job details for ${jobId}: ${response.statusText}`);
+        return null;
+      }
+
+      const jobDetails = await response.json();
+      const externalId = jobDetails.externalId;
+      
+      logger.info(`📄 Job details - ID: ${jobId}, ExternalID: ${externalId}`);
+      
+      if (!externalId) {
+        logger.warn(`❌ No externalId found in job details for job ${jobId}`);
+        return null;
+      }
+
+      logger.info(`📁 Looking up S3 path for externalId: ${externalId}`);
+      
+      const keyFormats = [
+        `originalS3Path:${externalId}`,
+        `original-s3-path:${externalId}`
+      ];
+      
+      logger.info(`🔑 Trying key formats: ${JSON.stringify(keyFormats)}`);
+      
+      let originalPath: string | null = null;
+      let foundKey: string | null = null;
+      
+      for (const key of keyFormats) {
+        const value = await this.metadataClient.get(key);
+        if (value) {
+          originalPath = value;
+          foundKey = key;
+          logger.info(`✅ Found S3 path using key: ${key}`);
+          break;
+        }
       }
       
+      if (originalPath && foundKey) {
+        logger.info(`✅ Retrieved original S3 path for job ${jobId}: ${originalPath}`);
+        
+        if (foundKey.includes('original-s3-path')) {
+          const newKey = `originalS3Path:${externalId}`;
+          await this.metadataClient.set(newKey, originalPath, { EX: 86400 });
+          await this.metadataClient.del(foundKey);
+          logger.info(`🔄 Migrated from ${foundKey} to ${newKey}`);
+        }
+        
+        return originalPath;
+      } else {
+        logger.warn(`❌ No original S3 path found for externalId ${externalId} using any key format`);
+        
+        try {
+          const allKeys = await this.metadataClient.keys('*');
+          const s3Keys = allKeys.filter(key => 
+            key.includes('originalS3Path') || key.includes('original-s3-path')
+          );
+          logger.info(`🔍 Available S3 path keys in Redis: ${JSON.stringify(s3Keys)}`);
+        } catch (keysError) {
+          logger.warn(`Failed to list Redis keys: ${keysError}`);
+        }
+        
+        return null;
+      }
+    } catch (error) {
+      logger.error(`🚨 Failed to retrieve original S3 path for job ${jobId}: ${error}`);
       return null;
     }
-  } catch (error) {
-    logger.error(`🚨 Failed to retrieve original S3 path for job ${jobId}: ${error}`);
-    return null;
   }
-}
 
-  // Publish upload notification with original S3 path
   private async publishUploadNotification(jobId: string, outputPath?: string) {
     try {
-      const uploadEnabled = process.env.UPLOAD_ENABLED === 'true';
+      console.log(`=== 📤 PUBLISH UPLOAD NOTIFICATION START ===`);
+      console.log(`Job ID: ${jobId}`);
+      console.log(`Output Path: ${outputPath || 'UNDEFINED'}`);
       
-      if (!uploadEnabled || !outputPath || !this.uploadClient) {
+      const uploadEnabled = process.env.UPLOAD_ENABLED === 'true';
+      console.log(`Upload Enabled: ${uploadEnabled}`);
+      console.log(`Upload Client Available: ${!!this.uploadClient}`);
+      
+      if (!uploadEnabled) {
+        console.log(`❌ Upload not enabled, skipping`);
+        return;
+      }
+      
+      if (!outputPath) {
+        console.log(`❌ Output path is undefined, cannot proceed`);
+        return;
+      }
+      
+      if (!this.uploadClient) {
+        console.log(`❌ Upload client not available, skipping`);
         return;
       }
 
-      // NEW: Retrieve original S3 path
+      console.log(`🔍 Looking up original S3 path for job: ${jobId}`);
       const originalS3Path = await this.getOriginalS3Path(jobId);
+      console.log(`📁 Retrieved S3 path: ${originalS3Path || 'NOT FOUND'}`);
       
       const packagesBaseDir = process.env.PACKAGES_BASE_DIR || '/data/packages';
+      console.log(`📦 Packages base directory: ${packagesBaseDir}`);
+      
+      console.log(`🔧 Calculating relative path...`);
+      console.log(`   Output path: ${outputPath}`);
+      console.log(`   Base dir: ${packagesBaseDir}`);
+      
       const relativePath = outputPath.replace(packagesBaseDir, '').replace(/^\//, '');
+      console.log(`📁 Relative path result: "${relativePath}"`);
+      
       const uploadChannel = process.env.UPLOAD_REDIS_CHANNEL || 'packaging-complete';
+      console.log(`📢 Upload channel: ${uploadChannel}`);
       
       if (relativePath) {
         const uploadMessage = {
           jobId: jobId,
           packagePath: relativePath,
           timestamp: new Date().toISOString(),
-          originalS3Path: originalS3Path // NEW: Include original S3 path
+          originalS3Path: originalS3Path
         };
 
-        await this.uploadClient.publish(uploadChannel, JSON.stringify(uploadMessage));
+        console.log(`📦 Prepared upload message:`, JSON.stringify(uploadMessage, null, 2));
         
-        if (originalS3Path) {
-          logger.info(`📤 Published upload notification for: ${relativePath} (original: ${originalS3Path})`);
-        } else {
-          logger.info(`📤 Published upload notification for: ${relativePath} (no original path found)`);
+        try {
+          console.log(`🚀 Publishing to Redis channel: ${uploadChannel}`);
+          await this.uploadClient.publish(uploadChannel, JSON.stringify(uploadMessage));
+          console.log(`✅ Successfully published upload notification`);
+          
+          if (originalS3Path) {
+            console.log(`📤 Published for: ${relativePath} (original: ${originalS3Path})`);
+          } else {
+            console.log(`📤 Published for: ${relativePath} (no original path found)`);
+          }
+        } catch (publishError) {
+          console.error(`❌ Failed to publish message: ${publishError}`);
         }
+      } else {
+        console.warn(`❌ Cannot publish - relativePath is empty`);
+        console.warn(`   Output path: ${outputPath}`);
+        console.warn(`   Base dir: ${packagesBaseDir}`);
       }
+      
+      console.log(`=== 📤 PUBLISH UPLOAD NOTIFICATION END ===\n`);
     } catch (error) {
-      logger.warn(`Failed to publish upload notification: ${error}`);
+      console.error(`🚨 Failed to publish upload notification: ${error}`);
     }
   }
 
@@ -365,18 +379,30 @@ private async getOriginalS3Path(jobId: string): Promise<string | null> {
 
   onPackageDone(jobUrl: string, jobId: string, outputPath?: string) {
     try {
-      this.packageListener?.onPackageDone?.(jobUrl, jobId, outputPath);
+      console.log(`=== 🎯 ON PACKAGE DONE CALLED ===`);
+      console.log(`Job URL: ${jobUrl}`);
+      console.log(`Job ID: ${jobId}`);
+      console.log(`Output Path: ${outputPath || 'UNDEFINED'}`);
+      console.log(`Output Path Type: ${typeof outputPath}`);
+      console.log(`Package Listener Available: ${!!this.packageListener}`);
       
-      // Trigger upload notification with original S3 path
+      if (this.packageListener?.onPackageDone) {
+        console.log(`📞 Calling packageListener.onPackageDone...`);
+        this.packageListener.onPackageDone(jobUrl, jobId, outputPath);
+        console.log(`✅ packageListener.onPackageDone completed`);
+      } else {
+        console.log(`ℹ️ No package listener or onPackageDone method`);
+      }
+      
+      console.log(`🚀 Calling publishUploadNotification...`);
       this.publishUploadNotification(jobId, outputPath);
+      console.log(`✅ publishUploadNotification called`);
+      console.log(`=== 🎯 ON PACKAGE DONE COMPLETED ===\n`);
     } catch (err) {
-      logger.warn(
-        `Error when calling onPackageDone: ${(err as Error).message}`
-      );
+      console.error(`❌ Error in onPackageDone: ${(err as Error).message}`);
     }
   }
 
-  //eslint-disable-next-line @typescript-eslint/no-explicit-any
   onPackageFail(message: string, err: any, jobId?: string) {
     try {
       this.packageListener?.onPackageFail?.(message, err);
