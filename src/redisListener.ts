@@ -191,95 +191,113 @@ export class RedisListener {
   }
 
   private async getOriginalS3Path(jobId: string): Promise<string | null> {
-    try {
-      if (!this.metadataClient) {
-        logger.warn('Metadata client not available');
-        return null;
-      }
-
-      try {
-        await this.metadataClient.ping();
-        logger.info('✅ Redis ping successful');
-      } catch (redisError) {
-        logger.error(`❌ Redis ping failed: ${redisError}`);
-        return null;
-      }
-
-      const jobUrl = `http://encore:8080/encoreJobs/${jobId}`;
-      logger.info(`🔍 Fetching job details from: ${jobUrl}`);
-      
-      const response = await fetch(jobUrl);
-      logger.info(`📡 Encore API response status: ${response.status} ${response.statusText}`);
-      
-      if (!response.ok) {
-        logger.warn(`Failed to fetch job details for ${jobId}: ${response.statusText}`);
-        return null;
-      }
-
-      const jobDetails = await response.json();
-      const externalId = jobDetails.externalId;
-      
-      logger.info(`📄 Job details - ID: ${jobId}, ExternalID: ${externalId}`);
-      
-      if (!externalId) {
-        logger.warn(`❌ No externalId found in job details for job ${jobId}`);
-        return null;
-      }
-
-      logger.info(`📁 Looking up S3 path for externalId: ${externalId}`);
-      
-      const keyFormats = [
-        `originalS3Path:${externalId}`,
-        `original-s3-path:${externalId}`
-      ];
-      
-      logger.info(`🔑 Trying key formats: ${JSON.stringify(keyFormats)}`);
-      
-      let originalPath: string | null = null;
-      let foundKey: string | null = null;
-      
-      for (const key of keyFormats) {
-        const value = await this.metadataClient.get(key);
-        if (value) {
-          originalPath = value;
-          foundKey = key;
-          logger.info(`✅ Found S3 path using key: ${key}`);
-          break;
-        }
-      }
-      
-      if (originalPath && foundKey) {
-        logger.info(`✅ Retrieved original S3 path for job ${jobId}: ${originalPath}`);
-        
-        if (foundKey.includes('original-s3-path')) {
-          const newKey = `originalS3Path:${externalId}`;
-          await this.metadataClient.set(newKey, originalPath, { EX: 86400 });
-          await this.metadataClient.del(foundKey);
-          logger.info(`🔄 Migrated from ${foundKey} to ${newKey}`);
-        }
-        
-        return originalPath;
-      } else {
-        console.log(`=== 🔴 MAIN PACKAGING WARNING: No original S3 path found for job ${jobId} ===`);
-        console.log(`=== 🔴 This warning comes BEFORE publishUploadNotification ===`);
-        
-        try {
-          const allKeys = await this.metadataClient.keys('*');
-          const s3Keys = allKeys.filter(key => 
-            key.includes('originalS3Path') || key.includes('original-s3-path')
-          );
-          logger.info(`🔍 Available S3 path keys in Redis: ${JSON.stringify(s3Keys)}`);
-        } catch (keysError) {
-          logger.warn(`Failed to list Redis keys: ${keysError}`);
-        }
-        
-        return null;
-      }
-    } catch (error) {
-      logger.error(`🚨 Failed to retrieve original S3 path for job ${jobId}: ${error}`);
+  try {
+    console.log(`\n=== 🔍 GET ORIGINAL S3 PATH START ===`);
+    console.log(`Job ID: ${jobId}`);
+    
+    if (!this.metadataClient) {
+      console.log(`❌ Metadata client not available`);
       return null;
     }
+
+    // Test Redis connectivity
+    try {
+      await this.metadataClient.ping();
+      console.log(`✅ Redis ping successful`);
+    } catch (redisError) {
+      console.log(`❌ Redis ping failed: ${redisError}`);
+      return null;
+    }
+
+    const jobUrl = `http://encore:8080/encoreJobs/${jobId}`;
+    console.log(`🔍 Fetching job details from: ${jobUrl}`);
+    
+    const response = await fetch(jobUrl);
+    console.log(`📡 Encore API response status: ${response.status} ${response.statusText}`);
+    
+    if (!response.ok) {
+      console.log(`❌ Failed to fetch job details for ${jobId}: ${response.statusText}`);
+      return null;
+    }
+
+    const jobDetails = await response.json();
+    const externalId = jobDetails.externalId;
+    
+    console.log(`📄 Job details - ID: ${jobId}, ExternalID: ${externalId}`);
+    
+    if (!externalId) {
+      console.log(`❌ No externalId found in job details for job ${jobId}`);
+      return null;
+    }
+
+    console.log(`📁 Looking up S3 path for externalId: ${externalId}`);
+    
+    const keyFormats = [
+      `originalS3Path:${externalId}`,
+      `original-s3-path:${externalId}`
+    ];
+    
+    console.log(`🔑 Trying key formats: ${JSON.stringify(keyFormats)}`);
+    
+    let originalPath: string | null = null;
+    let foundKey: string | null = null;
+    
+    for (const key of keyFormats) {
+      console.log(`   Checking key: ${key}`);
+      const value = await this.metadataClient.get(key);
+      if (value) {
+        originalPath = value;
+        foundKey = key;
+        console.log(`   ✅ FOUND using key: ${key}`);
+        console.log(`   📁 S3 Path: ${value}`);
+        break;
+      } else {
+        console.log(`   ❌ NOT FOUND using key: ${key}`);
+      }
+    }
+    
+    if (originalPath && foundKey) {
+      console.log(`🎉 SUCCESS: Retrieved original S3 path for job ${jobId}`);
+      
+      if (foundKey.includes('original-s3-path')) {
+        const newKey = `originalS3Path:${externalId}`;
+        await this.metadataClient.set(newKey, originalPath, { EX: 86400 });
+        await this.metadataClient.del(foundKey);
+        console.log(`🔄 Migrated from ${foundKey} to ${newKey}`);
+      }
+      
+      console.log(`=== 🔍 GET ORIGINAL S3 PATH END - FOUND ===\n`);
+      return originalPath;
+    } else {
+      // FIXED: Use console.log instead of logger.warn
+      console.log(`❌❌❌ No original S3 path found for externalId ${externalId}`);
+      console.log(`=== 🔴 MAIN PACKAGING WARNING: No original S3 path found for job ${jobId} ===`);
+      console.log(`=== 🔴 This is the actual warning that appears in logs ===`);
+      
+      try {
+        const allKeys = await this.metadataClient.keys('*');
+        const s3Keys = allKeys.filter(key => 
+          key.includes('originalS3Path') || key.includes('original-s3-path')
+        );
+        console.log(`🔍 Available S3 path keys in Redis: ${JSON.stringify(s3Keys)}`);
+        
+        // Show values of available keys
+        for (const key of s3Keys) {
+          const value = await this.metadataClient.get(key);
+          console.log(`   ${key} => ${value}`);
+        }
+      } catch (keysError) {
+        console.log(`Failed to list Redis keys: ${keysError}`);
+      }
+      
+      console.log(`=== 🔍 GET ORIGINAL S3 PATH END - NOT FOUND ===\n`);
+      return null;
+    }
+  } catch (error) {
+    console.log(`🚨 Failed to retrieve original S3 path for job ${jobId}: ${error}`);
+    return null;
   }
+}
 
   private async publishUploadNotification(jobId: string, outputPath?: string) {
   try {
