@@ -210,6 +210,7 @@ export class RedisListener {
   // }
 
   // NEW: Retrieve original S3 path from Redis using external ID
+// NEW: Retrieve original S3 path from Redis using external ID - supports both formats
 private async getOriginalS3Path(jobId: string): Promise<string | null> {
   try {
     if (!this.metadataClient) {
@@ -239,14 +240,9 @@ private async getOriginalS3Path(jobId: string): Promise<string | null> {
     }
 
     const jobDetails = await response.json();
-    logger.info(`📄 Full job details: ${JSON.stringify({
-      id: jobDetails.id,
-      externalId: jobDetails.externalId,
-      baseName: jobDetails.baseName,
-      status: jobDetails.status
-    }, null, 2)}`);
-    
     const externalId = jobDetails.externalId;
+    
+    logger.info(`📄 Job details - ID: ${jobId}, ExternalID: ${externalId}`);
     
     if (!externalId) {
       logger.warn(`❌ No externalId found in job details for job ${jobId}`);
@@ -255,42 +251,51 @@ private async getOriginalS3Path(jobId: string): Promise<string | null> {
 
     logger.info(`📁 Looking up S3 path for externalId: ${externalId}`);
     
-    // Use the externalId to look up the original S3 path
-    const redisKey = `originalS3Path:${externalId}`;
-    logger.info(`🔑 Redis key being used: ${redisKey}`);
+    // Try BOTH key formats
+    const keyFormats = [
+      `originalS3Path:${externalId}`,  // New format (camelCase)
+      `original-s3-path:${externalId}`  // Old format (with hyphens)
+    ];
     
-    // List all keys to see what's actually in Redis
-    try {
-      const allKeys = await this.metadataClient.keys('*');
-      logger.info(`🗝️ All keys in Redis: ${JSON.stringify(allKeys)}`);
-      
-      const s3Keys = await this.metadataClient.keys('originalS3Path:*');
-      logger.info(`🗝️ All S3 path keys in Redis: ${JSON.stringify(s3Keys)}`);
-    } catch (keysError) {
-      logger.warn(`Failed to list Redis keys: ${keysError}`);
+    logger.info(`🔑 Trying key formats: ${JSON.stringify(keyFormats)}`);
+    
+    let originalPath: string | null = null;
+    let foundKey: string | null = null;
+    
+    for (const key of keyFormats) {
+      const value = await this.metadataClient.get(key);
+      if (value) {
+        originalPath = value;
+        foundKey = key;
+        logger.info(`✅ Found S3 path using key: ${key}`);
+        break;
+      }
     }
     
-    const originalPath = await this.metadataClient.get(redisKey);
-    
-    if (originalPath) {
+    if (originalPath && foundKey) {
       logger.info(`✅ Retrieved original S3 path for job ${jobId}: ${originalPath}`);
+      
+      // If we found it using old format, migrate to new format
+      if (foundKey.includes('original-s3-path')) {
+        const newKey = `originalS3Path:${externalId}`;
+        await this.metadataClient.set(newKey, originalPath, { EX: 86400 });
+        await this.metadataClient.del(foundKey);
+        logger.info(`🔄 Migrated from ${foundKey} to ${newKey}`);
+      }
+      
       return originalPath;
     } else {
-      logger.warn(`❌ No original S3 path found for externalId ${externalId} (job ${jobId})`);
+      logger.warn(`❌ No original S3 path found for externalId ${externalId} using any key format`);
       
-      // Try alternative key patterns as fallback
-      const alternativeKeys = [
-        `original-s3-path:${jobId}`,
-        `originalS3Path:${jobId}`,
-        `original-s3-path:${externalId}`
-      ];
-      
-      for (const altKey of alternativeKeys) {
-        const altPath = await this.metadataClient.get(altKey);
-        if (altPath) {
-          logger.info(`🔄 Found path using alternative key ${altKey}: ${altPath}`);
-          return altPath;
-        }
+      // Debug: List all available keys to help troubleshooting
+      try {
+        const allKeys = await this.metadataClient.keys('*');
+        const s3Keys = allKeys.filter(key => 
+          key.includes('originalS3Path') || key.includes('original-s3-path')
+        );
+        logger.info(`🔍 Available S3 path keys in Redis: ${JSON.stringify(s3Keys)}`);
+      } catch (keysError) {
+        logger.warn(`Failed to list Redis keys: ${keysError}`);
       }
       
       return null;
